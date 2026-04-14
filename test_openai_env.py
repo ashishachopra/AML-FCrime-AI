@@ -19,12 +19,12 @@ async def test_openai_integration():
     try:
         response = requests.get("http://localhost:8005/health", timeout=5)
         if response.status_code == 200:
-            print("✅ AlertManager service is healthy")
+            print("AlertManager service is healthy")
         else:
-            print("❌ AlertManager service not responding")
+            print("AlertManager service not responding")
             return
     except Exception as e:
-        print(f"❌ Cannot connect to AlertManager: {e}")
+        print(f"Cannot connect to AlertManager: {e}")
         return
     
     # Test direct alert creation with high risk score to trigger OpenAI
