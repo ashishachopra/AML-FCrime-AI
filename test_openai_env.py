@@ -12,7 +12,7 @@ from datetime import datetime
 async def test_openai_integration():
     """Test OpenAI integration through AlertManager"""
     
-    print("🧪 Testing OpenAI Integration with .env Configuration")
+    print(" Testing OpenAI Integration with .env Configuration")
     print("=" * 60)
     
     # Check AlertManager health
@@ -43,7 +43,7 @@ async def test_openai_integration():
         "scored_at": datetime.utcnow().isoformat()
     }
     
-    print(f"\n📤 Sending high-risk transaction for processing...")
+    print(f"\n Sending high-risk transaction for processing...")
     print(f"   • Transaction ID: {test_alert_data['txn_id']}")
     print(f"   • Risk Score: {test_alert_data['risk_score']}")
     print(f"   • Expected: OpenAI SAR generation should trigger")
@@ -58,50 +58,50 @@ async def test_openai_integration():
         
         if response.status_code == 200:
             alert_result = response.json()
-            print(f"\n✅ Alert processed successfully!")
+            print(f"\n Alert processed successfully!")
             print(f"   • Alert ID: {alert_result.get('alert_id', 'N/A')}")
             print(f"   • Status: {alert_result.get('status', 'N/A')}")
             
             # Check if SAR narrative was generated
             sar_narrative = alert_result.get('sar_narrative')
             if sar_narrative:
-                print(f"\n🤖 OpenAI SAR Generation: SUCCESS")
+                print(f"\n OpenAI SAR Generation: SUCCESS")
                 print(f"   • Narrative Length: {len(sar_narrative)} characters")
                 print(f"   • Generation Method: {'AI-Powered' if len(sar_narrative) > 500 else 'Template-based'}")
                 
-                print(f"\n📄 Generated SAR Narrative:")
+                print(f"\n Generated SAR Narrative:")
                 print("=" * 60)
                 print(sar_narrative[:500] + "..." if len(sar_narrative) > 500 else sar_narrative)
                 print("=" * 60)
                 
                 # Verify it's AI-generated (longer, more detailed)
                 if len(sar_narrative) > 1000:
-                    print(f"\n✅ Confirmed: AI-powered SAR generation is working!")
+                    print(f"\n Confirmed: AI-powered SAR generation is working!")
                     print(f"   • .env file configuration: SUCCESS")
                     print(f"   • OpenAI API integration: SUCCESS")
                 else:
-                    print(f"\n⚠️  Template-based SAR generated (OpenAI may not be configured)")
+                    print(f"\n  Template-based SAR generated (OpenAI may not be configured)")
             else:
-                print(f"\n❌ No SAR narrative generated")
+                print(f"\nNo SAR narrative generated")
                 
         else:
-            print(f"❌ Alert processing failed: {response.status_code}")
+            print(f"Alert processing failed: {response.status_code}")
             print(f"   Response: {response.text}")
             
     except Exception as e:
-        print(f"❌ Error testing OpenAI integration: {e}")
+        print(f"Error testing OpenAI integration: {e}")
     
     # Get alert statistics
     try:
         response = requests.get("http://localhost:8005/alerts/statistics", timeout=5)
         if response.status_code == 200:
             stats = response.json()
-            print(f"\n📊 Alert Statistics:")
+            print(f"\nAlert Statistics:")
             print(f"   • Total Alerts: {stats.get('total_alerts', 0)}")
             print(f"   • High Risk Count: {stats.get('high_risk_count', 0)}")
             print(f"   • Average Risk Score: {stats.get('avg_risk_score', 0):.3f}")
     except Exception as e:
-        print(f"⚠️  Could not fetch alert statistics: {e}")
+        print(f"Could not fetch alert statistics: {e}")
 
 if __name__ == "__main__":
     asyncio.run(test_openai_integration()) 
