@@ -1,31 +1,19 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt ./
+RUN python -m pip install --no-cache-dir --requirement requirements.txt
 
-# Copy application code
-COPY . .
+COPY --chown=10001:10001 . ./
 
-# Environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# Expose port
+USER 10001:10001
 EXPOSE 8001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"] 
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

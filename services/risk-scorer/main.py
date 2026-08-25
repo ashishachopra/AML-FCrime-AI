@@ -1,188 +1,194 @@
-import json
 import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, Any, Optional
-from contextlib import asynccontextmanager
+import os
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel
 import aio_pika
 from aio_pika import ExchangeType
-
+from events import consume_events, publish_event
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from scorer import RiskScorer
-from events import publish_event, consume_events
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
-# Global variables
-connection = None
-channel = None
-exchange = None
-risk_scorer = None
+connection: aio_pika.RobustConnection | None = None
+channel: aio_pika.abc.AbstractRobustChannel | None = None
+exchange: aio_pika.abc.AbstractExchange | None = None
+consumer_task: asyncio.Task[None] | None = None
+risk_scorer: RiskScorer | None = None
+scored_transactions: dict[str, dict[str, Any]] = {}
+
+
+def _rabbitmq_url() -> str:
+    configured = os.getenv("RABBITMQ_URL")
+    if configured:
+        return configured
+    password_file = os.getenv("RABBITMQ_PASSWORD_FILE")
+    password = (
+        Path(password_file).read_text(encoding="utf-8").strip()
+        if password_file
+        else os.getenv("RABBITMQ_PASSWORD", "guest")
+    )
+    user = quote(os.getenv("RABBITMQ_USER", "guest"), safe="")
+    host = os.getenv("RABBITMQ_HOST", "rabbitmq")
+    port = int(os.getenv("RABBITMQ_PORT", "5672"))
+    vhost = quote(os.getenv("RABBITMQ_VHOST", ""), safe="")
+    return f"amqp://{user}:{quote(password, safe='')}@{host}:{port}/{vhost}"
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    global connection, channel, exchange, risk_scorer
-    
+async def lifespan(_: FastAPI):
+    global connection, channel, exchange, consumer_task, risk_scorer
+    risk_scorer = RiskScorer()
+    connection = await aio_pika.connect_robust(_rabbitmq_url())
+    channel = await connection.channel(publisher_confirms=True)
+    await channel.set_qos(prefetch_count=int(os.getenv("EVENT_PREFETCH", "20")))
+    exchange = await channel.declare_exchange("aml.events", ExchangeType.FANOUT, durable=True)
+    consumer_task = asyncio.create_task(
+        consume_events(channel, exchange, process_features_ready_event),
+        name="risk-scorer-consumer",
+    )
+    logger.info("Risk scorer started")
     try:
-        # Initialize risk scorer
-        risk_scorer = RiskScorer()
-        
-        # Connect to RabbitMQ
-        connection = await aio_pika.connect_robust("amqp://guest:guest@rabbitmq:5672/")
-        channel = await connection.channel()
-        exchange = await channel.declare_exchange(
-            "aml.events", 
-            ExchangeType.FANOUT,
-            durable=True
-        )
-        
-        # Start consuming events
-        asyncio.create_task(consume_events(channel, exchange, process_features_ready_event))
-        
-        logger.info("Risk Scoring service started successfully")
-        
-    except Exception as e:
-        logger.error(f"Failed to start Risk Scoring service: {e}")
-        raise
-    
-    yield
-    
-    # Shutdown
-    if connection:
-        await connection.close()
+        yield
+    finally:
+        if consumer_task:
+            consumer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await consumer_task
+        if connection and not connection.is_closed:
+            await connection.close()
+
 
 app = FastAPI(
     title="AML Risk Scoring API",
-    version="1.0.0",
-    description="ML-based risk scoring service using ONNX runtime",
-    lifespan=lifespan
+    version="2.0.0",
+    description="Deterministic reference risk policy with explicit validation limitations",
+    lifespan=lifespan,
 )
 
+
 class ScoreRequest(BaseModel):
-    txn_id: str
-    features: Dict[str, float]
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    txn_id: str = Field(min_length=1, max_length=128)
+    features: dict[str, float] = Field(min_length=1, max_length=100)
+    transaction: dict[str, Any] | None = None
+
 
 class ScoreResponse(BaseModel):
     txn_id: str
-    risk_score: float
-    confidence: float
-    shap_values: Dict[str, float]
+    risk_score: float = Field(ge=0, le=1)
+    risk_category: Literal["low", "medium", "high", "critical"]
+    data_quality_score: float = Field(ge=0, le=1)
+    decision_basis: str
+    scorer_version: str
+    feature_contributions: dict[str, float]
+    triggered_rules: list[str]
+    transaction: dict[str, Any]
     scored_at: datetime
 
-class ModelMetrics(BaseModel):
-    model_version: str
-    accuracy: float
-    precision: float
-    recall: float
-    f1_score: float
-    last_updated: datetime
 
 class ScoresListResponse(BaseModel):
-    scores: list
+    scores: list[ScoreResponse]
     total: int
+    limit: int
+    offset: int
+
 
 class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
-
-# In-memory storage for demo purposes
-scored_transactions = {}
+    dependencies: dict[str, str] | None = None
 
 
+def _scorer() -> RiskScorer:
+    if not risk_scorer:
+        raise HTTPException(status_code=503, detail="service is not ready")
+    return risk_scorer
 
-async def process_features_ready_event(event_data: Dict[str, Any]):
-    """Process FeaturesReady events and compute risk scores"""
-    event_type = event_data.get("type")
-    data = event_data.get("data", {})
-    
-    try:
-        if event_type == "FeaturesReady":
-            txn_id = data["txn_id"]
-            features = data["features"]
-            
-            # Compute risk score
-            score_result = await risk_scorer.score_transaction(txn_id, features)
-            
-            # Store the score
-            scored_transactions[txn_id] = score_result
-            
-            # Publish scored event
-            await publish_event(
-                exchange,
-                "Scored",
-                score_result
-            )
-            
-    except Exception as e:
-        logger.error(f"Error processing FeaturesReady event: {e}")
+
+async def process_features_ready_event(event_data: dict[str, Any]) -> None:
+    if not exchange:
+        raise RuntimeError("event exchange is not ready")
+    if event_data.get("type") != "FeaturesReady":
+        return
+    data = event_data.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("event data must be an object")
+    result = await _scorer().score_transaction(
+        data["txn_id"], data["features"], data.get("transaction")
+    )
+    scored_transactions[data["txn_id"]] = result
+    await publish_event(exchange, "Scored", result, event_data.get("batchid"))
+
 
 @app.post("/score", response_model=ScoreResponse)
-async def score_transaction(request: ScoreRequest):
-    """Score transaction risk"""
+async def score_transaction(request: ScoreRequest) -> ScoreResponse:
     try:
-        score_result = await risk_scorer.score_transaction(
-            request.txn_id, 
-            request.features
+        result = await _scorer().score_transaction(
+            request.txn_id, request.features, request.transaction
         )
-        
-        return ScoreResponse(**score_result)
-        
-    except Exception as e:
-        logger.error(f"Error scoring transaction {request.txn_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Error computing risk score"
-        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    scored_transactions[request.txn_id] = result
+    return ScoreResponse(**result)
 
-@app.get("/model/metrics", response_model=ModelMetrics)
-async def get_model_metrics():
-    """Get model performance metrics"""
-    try:
-        metrics = risk_scorer.get_model_metrics()
-        return ModelMetrics(**metrics)
-        
-    except Exception as e:
-        logger.error(f"Error getting model metrics: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Error retrieving model metrics"
-        )
+
+@app.get("/scorer/metadata")
+@app.get("/model/metrics", deprecated=True)
+async def get_scorer_metadata() -> dict[str, Any]:
+    return _scorer().get_scorer_metadata()
+
 
 @app.get("/scores", response_model=ScoresListResponse)
-async def get_all_scores():
-    """Get all computed risk scores"""
-    
-    scores_list = []
-    for txn_id, score_data in scored_transactions.items():
-        # Convert datetime to string for JSON serialization
-        score_copy = score_data.copy()
-        if 'scored_at' in score_copy and isinstance(score_copy['scored_at'], datetime):
-            score_copy['scored_at'] = score_copy['scored_at'].isoformat()
-        
-        scores_list.append({
-            "customer_id": f"CUST_{txn_id[-1]}",  # Mock customer ID
-            "account_id": f"ACC_{txn_id[-3:]}",   # Mock account ID
-            **score_copy
-        })
-    
+async def get_all_scores(
+    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)
+) -> ScoresListResponse:
+    values = list(scored_transactions.values())
+    page = [ScoreResponse(**value) for value in values[offset : offset + limit]]
     return ScoresListResponse(
-        scores=scores_list,
-        total=len(scores_list)
+        scores=page,
+        total=len(values),
+        limit=limit,
+        offset=offset,
     )
 
+
+@app.get("/scores/{txn_id}", response_model=ScoreResponse)
+async def get_score(txn_id: str) -> ScoreResponse:
+    value = scored_transactions.get(txn_id)
+    if not value:
+        raise HTTPException(status_code=404, detail="score not found")
+    return ScoreResponse(**value)
+
+
+@app.get("/health/live", response_model=HealthResponse)
+async def liveness() -> HealthResponse:
+    return HealthResponse(status="healthy", timestamp=datetime.now(timezone.utc))
+
+
+@app.get("/health/ready", response_model=HealthResponse)
 @app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
+async def readiness() -> HealthResponse:
+    broker_ready = bool(connection and not connection.is_closed and exchange)
+    consumer_ready = bool(consumer_task and not consumer_task.done())
+    if not broker_ready or not consumer_ready or not risk_scorer:
+        raise HTTPException(status_code=503, detail="service dependencies are not ready")
     return HealthResponse(
         status="healthy",
-        timestamp=datetime.utcnow()
+        timestamp=datetime.now(timezone.utc),
+        dependencies={"rabbitmq": "ready", "consumer": "ready"},
     )
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8003) 
+
+    uvicorn.run(app, host="0.0.0.0", port=8003)

@@ -1,162 +1,38 @@
 openapi: 3.1.0
 info:
   title: AML Alert Manager API
-  version: 1.0.0
-  description: Manages AML alerts, deduplication, and SAR narrative generation
+  version: 2.0.0
+  description: Persistent deduplicated alerts, audit events, and human-reviewed narrative drafts.
 servers:
-  - url: http://localhost:8005
-    description: Development server
+  - url: http://127.0.0.1:8005
 paths:
   /alerts:
     get:
-      summary: Get all alerts
-      parameters:
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [open, investigating, closed, false_positive]
-        - name: risk_threshold
-          in: query
-          schema:
-            type: number
-            minimum: 0
-            maximum: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 100
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            default: 0
+      summary: List filtered alerts.
       responses:
-        '200':
-          description: Alerts retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  alerts:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Alert'
-                  total:
-                    type: integer
-                  limit:
-                    type: integer
-                  offset:
-                    type: integer
-  /alerts/{alertId}:
+        "200": {description: Paginated alerts}
+  /alerts/statistics:
     get:
-      summary: Get specific alert
-      parameters:
-        - name: alertId
-          in: path
-          required: true
-          schema:
-            type: string
       responses:
-        '200':
-          description: Alert retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Alert'
-        '404':
-          description: Alert not found
+        "200": {description: Alert and review-backlog statistics}
+  /alerts/{alert_id}:
+    get:
+      parameters:
+        - {name: alert_id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Alert}
+        "404": {description: Alert not found}
     patch:
-      summary: Update alert status
+      summary: Record investigation changes or a human narrative review.
       parameters:
-        - name: alertId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AlertUpdate'
+        - {name: alert_id, in: path, required: true, schema: {type: string}}
       responses:
-        '200':
-          description: Alert updated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Alert'
-        '404':
-          description: Alert not found
-  /health:
+        "200": {description: Updated and audited alert}
+        "409": {description: Invalid review transition}
+  /alerts/{alert_id}/audit:
     get:
-      summary: Health check
+      parameters:
+        - {name: alert_id, in: path, required: true, schema: {type: string}}
       responses:
-        '200':
-          description: Service is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [healthy]
-                  timestamp:
-                    type: string
-                    format: date-time
-components:
-  schemas:
-    Alert:
-      type: object
-      properties:
-        alert_id:
-          type: string
-        txn_id:
-          type: string
-        customer_id:
-          type: string
-        risk_score:
-          type: number
-          minimum: 0
-          maximum: 1
-        status:
-          type: string
-          enum: [open, investigating, closed, false_positive]
-        alert_type:
-          type: string
-          enum: [high_risk_transaction, suspicious_pattern, graph_anomaly, velocity_spike]
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        sar_narrative:
-          type: string
-          description: Auto-generated SAR narrative for high-risk alerts
-        investigation_notes:
-          type: string
-        assigned_to:
-          type: string
-      required:
-        - alert_id
-        - txn_id
-        - customer_id
-        - risk_score
-        - status
-        - alert_type
-        - created_at
-    AlertUpdate:
-      type: object
-      properties:
-        status:
-          type: string
-          enum: [open, investigating, closed, false_positive]
-        investigation_notes:
-          type: string
-        assigned_to:
-          type: string 
+        "200": {description: Ordered append-only audit events}
+

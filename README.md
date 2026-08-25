@@ -1,299 +1,132 @@
-# Anti-Money Laundering (AML) System
+# AML Reference Pipeline
 
-## Project Introduction
+This repository is a security-conscious reference implementation of an anti-money-laundering event pipeline. It validates related customer, account, and transaction records; computes deterministic risk features; applies a transparent reference policy; stores deduplicated alerts and their audit history; and optionally drafts investigator narratives.
 
-This project delivers a comprehensive, production-ready Anti-Money Laundering system built on modern microservices architecture. The system provides real-time transaction monitoring, AI-powered risk assessment, and automated regulatory reporting capabilities that meet enterprise-grade compliance requirements.
+It is not a production AML system, a sanctions-screening service, a validated machine-learning model, or a regulatory filing tool. A real deployment requires institution-specific risk assessment, independent model/policy validation, current screening data, durable operational data stores, legal review, monitoring, and human investigators.
 
-## System Architecture
+## Architecture
 
-### Microservices Overview
+```text
+JWT client
+    |
+    v
+Gateway :8000 ---> Ingestion :8001 ---> RabbitMQ
+                                         |
+                                         v
+                               Feature engine :8002
+                                         |
+                                         v
+                              Reference scorer :8003
+                                         |
+                                         v
+                               Alert manager :8005
+                               (SQLite + audit log)
 
-The system consists of six specialized microservices, each designed for specific AML functions:
+Graph analysis :8004 is a deterministic, opt-in API for entity-network exploration.
+```
 
-| Service | Port | Primary Function | Key Capabilities |
-|---------|------|------------------|------------------|
-| **Ingestion API** | 8001 | Data Processing | Batch upload, validation, event publishing |
-| **Feature Engine** | 8002 | Risk Analysis | 32+ risk indicators, velocity analysis, structuring detection |
-| **Risk Scorer** | 8003 | ML Assessment | Ensemble models, SHAP explanations, business rules |
-| **Graph Analysis** | 8004 | Network Analysis | Community detection, pattern recognition, flow analysis |
-| **Alert Manager** | 8005 | Case Management | Alert lifecycle, AI-powered SAR generation |
-| **Gateway** | 8000 | API Orchestration | Unified interface, authentication, load balancing |
+The event consumers use durable queues, persistent messages, publisher confirms, manual acknowledgements, bounded prefetch, and dead-letter queues. Services expose separate liveness and readiness checks where they have dependencies.
 
-### Technology Foundation
+## What is implemented
 
-- **Runtime**: Python 3.12 with FastAPI framework
-- **Machine Learning**: scikit-learn ensemble models with SHAP explainability
-- **AI Integration**: OpenAI ChatGPT for automated SAR narrative generation
-- **Message Queue**: RabbitMQ for event-driven communication
-- **Containerization**: Docker with Docker Compose orchestration
-- **API Standards**: OpenAPI/Swagger documentation
+- Strict Pydantic validation, timezone-aware timestamps, decimal monetary input, duplicate detection, referential-integrity checks, record limits, and bounded uploads.
+- Signed JWT validation with expiry, issuer, audience, algorithm allow-listing, and role checks. Authentication can only be bypassed with the explicit `AUTH_DISABLED=true` development setting.
+- Currency-aware threshold features. Threshold logic is disabled when the base-currency amount is unavailable instead of comparing unrelated currencies.
+- A versioned FATF jurisdiction snapshot. FATF monitored-jurisdiction flags are risk inputs only; they are not sanctions matches or automatic customer decisions.
+- Deterministic reference-policy scoring. The repository publishes no accuracy, precision, recall, AUC, confidence, or SHAP claims because it includes no trained artifact and no representative labeled validation set.
+- Persistent, transaction-deduplicated alerts in SQLite with append-only audit events for alert creation, investigation changes, assignment, and narrative review.
+- OpenAI Responses API narrative drafting with `store=false`, bounded output, pseudonymous safety identifiers, evidence-only instructions, no tools, deterministic template fallback, and mandatory human-review state.
+- A deterministic NetworkX graph analyzer with real centrality/community calculations rather than random simulated outputs.
+- Non-root, read-only application containers, dropped Linux capabilities, loopback-bound development ports, health-gated startup, persistent alert data, and Compose-mounted broker/JWT secrets.
 
-## Core Capabilities
+## Quick start
 
-### Risk Assessment Engine (Simulation Results)
+Prerequisites: Docker with Compose and Python 3.12 for local development.
 
-The system implements a sophisticated risk assessment framework:
+1. Copy the configuration template and generate untracked local secret files:
 
-**Feature Engineering (32+ Indicators)**
-- Transaction amount analysis with logarithmic transformations
-- Velocity patterns across configurable time windows (7, 30 days)
-- Geographic risk scoring for 70+ countries
-- Structuring detection across multiple reporting thresholds
-- Customer risk factors including PEP exposure and KYC gaps
-- Temporal analysis for off-hours and weekend activity
+   ```bash
+   cp example.env.txt .env
+   python scripts/create_local_secrets.py
+   ```
 
-**Machine Learning Models**
-- Ensemble architecture combining Gradient Boosting and Random Forest
-- Model performance: 94.2% accuracy, 91.3% precision, 89.7% recall
-- SHAP-based explainability for regulatory compliance
-- Business rules overlay for regulatory requirement coverage
+2. Validate and start the stack:
 
-**Risk Categorization**
-- Low Risk: 0.0 - 0.3
-- Medium Risk: 0.3 - 0.7  
-- High Risk: 0.7 - 0.9
-- Critical Risk: 0.9 - 1.0
+   ```bash
+   docker compose config --quiet
+   docker compose up --build --wait
+   ```
 
-### AI-Powered SAR Generation
+3. Create a short-lived local token using the generated JWT secret:
 
-**OpenAI Integration**
-- ChatGPT powered narrative generation for high-risk alerts (score >= 0.8)
-- Professional, regulatory-compliant language and format
-- Risk factor analysis based on SHAP feature importance
-- Template fallback system ensuring 100% availability
+   ```bash
+   export JWT_SECRET_KEY="$(cat secrets/jwt_secret)"
+   export JWT_ISSUER='aml-reference'
+   export JWT_AUDIENCE='aml-api'
+   python scripts/create_dev_token.py
+   ```
 
-**Regulatory Compliance**
-- Professional SAR format ready for regulatory submission
-- Comprehensive risk factor documentation
-- Specific investigation recommendations
-- Complete audit trail for compliance officers
+4. Use the returned token with the gateway:
 
-### Network Analysis
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/alerts
+   ```
 
-**Graph Analytics**
-- Dynamic transaction network construction
-- Centrality measures: degree, betweenness, closeness, PageRank
-- Community detection using Louvain algorithm
-- Suspicious pattern identification: circular transactions, star patterns, layering chains
+Swagger UI is available at `http://127.0.0.1:8000/docs`. Internal service ports are published only on loopback for local inspection; expose only the gateway in a deployed environment.
 
-**Money Laundering Detection**
-- Placement pattern recognition
-- Layering scheme identification  
-- Integration activity detection
-- Coordinated activity analysis
+### Optional OpenAI drafting
 
-## Deployment and Operations
+Leave `OPENAI_API_KEY` empty to use fact-grounded deterministic templates. When a key is configured, the alert manager uses the pinned model snapshot in `OPENAI_MODEL`. Generated content is always marked `DRAFT - HUMAN REVIEW REQUIRED`; no code path files or submits a SAR/STR.
 
-### Quick Start
+Do not send production customer data to an external model until your organization has approved the data classification, retention, residency, contractual, access-control, and incident-response requirements. The implementation omits customer, account, and transaction identifiers from model input by default.
 
-**Prerequisites**
-- Docker and Docker Compose
-- OpenAI API key (optional for AI features)
+## Development
 
-**Installation**
 ```bash
-git clone https://github.com/mominalix/AI-Based-Anti-Money-Laundering-AML-System.git
-cd aml-project
-cp example.env.txt .env
-# Configure environment variables
-docker-compose up -d
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+.venv/bin/ruff check services tests
+.venv/bin/ruff format --check services tests
 ```
 
-**Verification**
-```bash
-# Check service health
-curl http://localhost:8000/api/v1/health
+On Windows, use `.venv\Scripts\python.exe` and `.venv\Scripts\ruff.exe`.
 
-# Run complete pipeline test
-python complete_pipeline_demo.py
-```
+The automated suite covers validation, relationship integrity, currency handling, temporal leakage, deterministic scoring, honest scorer metadata, narrative grounding, alert audit/review, graph determinism, and JWT enforcement.
 
-### Configuration Management
+## API summary
 
-**Environment Variables**
-```env
-# AI Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4
-SAR_GENERATION_ENABLED=true
+| Service | Main endpoints |
+|---|---|
+| Gateway | `POST /v1/batch`, `GET /v1/alerts`, `GET /v1/transactions/{txn_id}` |
+| Ingestion | `POST /batch`, `/health/live`, `/health/ready` |
+| Feature engine | `POST /compute`, `GET /features/{txn_id}`, `GET /metadata` |
+| Risk scorer | `POST /score`, `GET /scores/{txn_id}`, `GET /scorer/metadata` |
+| Alert manager | `GET/PATCH /alerts/{id}`, `GET /alerts/{id}/audit`, `GET /alerts/statistics` |
+| Graph analysis | `POST /graph/transactions`, `GET /graph/risk/{party_id}`, `GET /metadata` |
 
-# Risk Thresholds
-RISK_THRESHOLD_ALERT=0.7
-RISK_THRESHOLD_SAR=0.8
+## Important limitations
 
-# Feature Engineering
-VELOCITY_WINDOW_DAYS=30
-COUNTRY_RISK_HIGH_THRESHOLD=0.6
-```
+- Feature, score, and graph state remain in process memory. Only alerts and their audit events are persisted.
+- SQLite is appropriate for the reference stack, not a horizontally scaled case-management system.
+- Batch event publication does not implement a transactional outbox; a broker failure partway through a batch can produce a partial batch. Event IDs, batch IDs, alert deduplication, and dead letters limit the impact, but production ingestion needs an outbox/inbox design.
+- Country codes do not identify sanctioned persons or prohibited transactions. Integrate an authoritative, current entity-screening system and pass a reviewed `sanctions_match` signal separately.
+- The FATF snapshot must be refreshed and independently approved after each relevant publication. Increased monitoring does not itself call for enhanced due diligence or de-risking.
+- Risk weights and thresholds are illustrative. Validate conceptual soundness, data suitability, outcomes, calibration, drift, bias, overrides, and operating controls before use.
+- Narrative approval records human review of a draft; it does not constitute a regulatory filing decision or submission.
+- TLS termination, distributed rate limiting, centralized authorization, immutable enterprise audit storage, observability, backups, disaster recovery, data retention, and key rotation belong in the deployment platform.
 
-**Service Configuration**
-Each microservice includes comprehensive configuration options for:
-- Performance tuning parameters
-- Algorithm-specific settings
-- Integration endpoints
-- Security configurations
+## Guidance used for this upgrade
 
-## API Interface
+- [FATF Recommendations and risk-based approach](https://www.fatf-gafi.org/en/publications/Fatfrecommendations/Fatf-recommendations.html)
+- [FATF high-risk and monitored jurisdictions](https://www.fatf-gafi.org/en/countries/black-and-grey-lists.html)
+- [OFAC Sanctions List Service](https://ofac.treasury.gov/sanctions-list-service)
+- [FinCEN SAR narrative guidance](https://www.fincen.gov/resources/statutes-regulations/guidance/sar-narrative-guidance-package)
+- [Federal Reserve revised model-risk guidance (SR 26-2)](https://www.federalreserve.gov/supervisionreg/srletters/SR2602.htm)
+- [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework)
+- [OWASP API Security Top 10](https://owasp.org/API-Security/)
+- [RabbitMQ reliability guidance](https://www.rabbitmq.com/docs/reliability)
+- [Docker Compose startup-order guidance](https://docs.docker.com/compose/how-tos/startup-order/)
+- [OpenAI Responses API reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
 
-### Primary Endpoints
-
-**Data Ingestion**
-```
-POST /api/v1/upload
-Content-Type: application/json
-```
-
-**Risk Assessment**
-```
-GET /api/v1/scores?risk_threshold=0.8
-GET /api/v1/features?txn_id=T123
-```
-
-**Alert Management**
-```
-GET /api/v1/alerts?status=open
-PATCH /api/v1/alerts/{alert_id}
-GET /api/v1/alerts/statistics
-```
-
-**System Monitoring**
-```
-GET /api/v1/health
-GET /api/v1/health/detailed
-```
-
-### API Documentation
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-- **OpenAPI Specification**: Complete API documentation with examples
-
-## Performance and Scalability
-
-### System Performance
-
-| Metric | Performance |
-|--------|-------------|
-| Processing Speed | Sub-second feature computation |
-| Throughput | 1000+ transactions per minute |
-| Model Accuracy | 94.2% with 91.3% precision |
-| System Availability | 99.9% with health monitoring |
-| False Positive Rate | 8.7% (industry competitive) |
-
-### Scalability Features
-
-- **Stateless Design**: All services support horizontal scaling
-- **Event-Driven Architecture**: Asynchronous processing with RabbitMQ
-- **Load Balancing**: Gateway-managed request distribution
-- **Circuit Breaker Pattern**: Fault tolerance and graceful degradation
-- **Health Monitoring**: Comprehensive service health tracking
-
-## Regulatory Compliance
-
-### AML Compliance Features
-
-**Detection Capabilities**
-- Structuring and smurfing pattern detection
-- Sanctions screening across multiple lists (OFAC, EU, UK, UN)
-- PEP (Politically Exposed Person) monitoring
-- High-risk jurisdiction identification
-- Velocity and behavioral anomaly detection
-
-**Reporting and Documentation**
-- Automated SAR generation with professional narratives
-- Complete audit trail for all decisions
-- Risk factor explanations with SHAP values
-- Investigation workflow management
-- Regulatory submission ready formats
-
-**Quality Assurance**
-- Model explainability for regulatory requirements
-- Comprehensive error handling and fallback mechanisms
-- Data validation and quality controls
-- Performance monitoring and alerting
-
-### Sample Detection Results
-
-The system successfully identifies complex money laundering scenarios:
-
-- **$500M Drug Cartel Transaction**: Risk Score 0.85, AI SAR Generated
-- **Sanctions Evasion**: $10M Iran transaction, Risk Score 0.92
-- **Structuring Patterns**: Multiple sub-threshold transactions detected
-- **PEP Networks**: Political figure involvement flagged
-
-## Development and Maintenance
-
-### Development Environment
-
-**Local Setup**
-```bash
-cd services/[service-name]
-pip install -r requirements.txt
-uvicorn main:app --port [port]
-```
-
-**Testing Framework**
-```bash
-pytest tests/
-python -m pytest tests/test_[component].py -v
-```
-
-### Service Documentation
-
-Each microservice includes comprehensive README documentation covering:
-- Technical architecture and workflow
-- API endpoints and data models
-- Configuration options and dependencies
-- Development setup and testing procedures
-- Production considerations and monitoring
-
-### Code Quality
-
-- **Type Hints**: Full Python type annotation coverage
-- **API Validation**: Pydantic models for data validation
-- **Error Handling**: Comprehensive error handling and logging
-- **Testing**: Unit and integration test coverage
-- **Documentation**: Complete API and code documentation
-
-## Production Considerations
-
-### Security
-
-- **Authentication**: JWT-based security framework ready
-- **Input Validation**: Comprehensive data sanitization
-- **Rate Limiting**: API abuse prevention mechanisms
-- **Audit Logging**: Complete activity tracking for compliance
-- **Data Encryption**: Secure data handling practices
-
-### Monitoring and Observability
-
-- **Health Checks**: Real-time service health monitoring
-- **Performance Metrics**: Response time and throughput tracking
-- **Business Metrics**: Alert rates and detection performance
-- **Error Tracking**: Comprehensive error logging and alerting
-- **Distributed Tracing**: Request correlation across services
-
-### Integration Capabilities
-
-- **Database Ready**: Designed for production database integration
-- **External APIs**: Configurable external service integration
-- **Case Management**: Ready for enterprise case management integration
-- **Regulatory Systems**: Formatted for regulatory reporting systems
-
-## Support and Maintenance
-
-### Documentation Structure
-
-- **System Overview**: Architecture and capability documentation
-- **Service Documentation**: Individual microservice technical details
-- **API Reference**: Complete endpoint documentation with examples
-- **Configuration Guide**: Environment and deployment configuration
-- **Development Guide**: Setup and contribution procedures
-
-### Quality Metrics
-
-- **Code Coverage**: Comprehensive test coverage across all services
-- **Performance Benchmarks**: Established performance baselines
-- **Compliance Validation**: Regulatory requirement verification
-- **Security Assessment**: Security best practice implementation
- 
+See [MODEL_CARD.md](MODEL_CARD.md) and [SECURITY.md](SECURITY.md) before extending or deploying the system.

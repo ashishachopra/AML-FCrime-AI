@@ -1,29 +1,52 @@
 import logging
-from datetime import datetime
-from typing import Dict, Any, List, Optional
+import os
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel
-
+from fastapi import FastAPI, HTTPException
 from graph import GraphAnalyzer
+from pydantic import BaseModel, ConfigDict, Field
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+graph_analyzer: GraphAnalyzer | None = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global graph_analyzer
+    graph_analyzer = GraphAnalyzer()
+    yield
+
 
 app = FastAPI(
     title="AML Graph Analysis API",
-    version="1.0.0",
-    description="Real-time customer/counterparty graph analysis with centrality and community detection"
+    version="2.0.0",
+    description="Deterministic entity-network risk indicators",
+    lifespan=lifespan,
 )
 
-# Global variables
-graph_analyzer = None
+
+class GraphTransaction(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    txn_id: str = Field(min_length=1, max_length=128)
+    account_id: str = Field(min_length=1, max_length=128)
+    customer_id: str | None = Field(default=None, max_length=128)
+    counterparty_id: str = Field(min_length=1, max_length=128)
+    timestamp: datetime
+    amount: float = Field(gt=0)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    counterparty_country: str = Field(pattern=r"^[A-Z]{2}$")
+    customer_kyc_level: str | None = None
+    customer_pep_flag: bool | None = None
+
 
 class ConnectedParty(BaseModel):
     party_id: str
     relationship_strength: float
     risk_contribution: float
+
 
 class GraphAlert(BaseModel):
     alert_type: str
@@ -31,64 +54,65 @@ class GraphAlert(BaseModel):
     description: str
     confidence: float
 
+
 class GraphRiskResponse(BaseModel):
     party_id: str
     cluster_id: str
     centrality_score: float
     community_risk: float
-    connected_parties: List[ConnectedParty]
-    graph_alerts: List[GraphAlert]
+    connected_parties: list[ConnectedParty]
+    graph_alerts: list[GraphAlert]
     analyzed_at: datetime
 
-class HealthResponse(BaseModel):
-    status: str
-    timestamp: datetime
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize graph analyzer on startup"""
-    global graph_analyzer
-    
+def _analyzer() -> GraphAnalyzer:
+    if not graph_analyzer:
+        raise HTTPException(status_code=503, detail="service is not ready")
+    return graph_analyzer
+
+
+@app.post("/graph/transactions", status_code=201)
+async def add_transaction(transaction: GraphTransaction) -> dict[str, Any]:
+    data = transaction.model_dump(mode="json", exclude_none=True)
+    customer = None
+    if transaction.customer_id:
+        customer = {
+            "customer_id": transaction.customer_id,
+            "kyc_level": transaction.customer_kyc_level,
+            "pep_flag": transaction.customer_pep_flag,
+        }
     try:
-        graph_analyzer = GraphAnalyzer()
-        logger.info("Graph Analysis service started successfully")
-        
-    except Exception as e:
-        logger.error(f"Failed to start Graph Analysis service: {e}")
-        raise
+        return _analyzer().add_transaction_to_graph(data, customer)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
 
 @app.get("/graph/risk/{party_id}", response_model=GraphRiskResponse)
-async def get_graph_risk(party_id: str):
-    """Get graph-based risk analysis for a party"""
-    
-    try:
-        risk_analysis = await graph_analyzer.analyze_party_risk(party_id)
-        
-        if not risk_analysis:
-            raise HTTPException(
-                status_code=404,
-                detail="Party not found in graph"
-            )
-        
-        return GraphRiskResponse(**risk_analysis)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error analyzing party {party_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Error performing graph analysis"
-        )
+async def get_graph_risk(party_id: str) -> GraphRiskResponse:
+    result = await _analyzer().analyze_party_risk(party_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="party not found in graph")
+    return GraphRiskResponse(**result)
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    return HealthResponse(
-        status="healthy",
-        timestamp=datetime.utcnow()
-    )
+
+@app.get("/graph/statistics")
+async def graph_statistics() -> dict[str, Any]:
+    return _analyzer().get_graph_statistics()
+
+
+@app.get("/metadata")
+async def metadata() -> dict[str, Any]:
+    return _analyzer().metadata()
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    if not graph_analyzer:
+        raise HTTPException(status_code=503, detail="service is not ready")
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc)}
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8004) 
+
+    uvicorn.run(app, host="0.0.0.0", port=8004)

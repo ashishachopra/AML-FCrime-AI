@@ -1,144 +1,179 @@
-version: '3.8'
+name: aml-reference
+
+x-app-service: &app-service
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  networks:
+    - aml-backend
+
+x-rabbit-environment: &rabbit-environment
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
+  RABBITMQ_PASSWORD_FILE: /run/secrets/rabbitmq_password
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 services:
-  # Message Broker
   rabbitmq:
-    image: rabbitmq:3.12-management
-    container_name: aml-rabbitmq
+    build: ./services/rabbitmq
+    image: aml-reference-rabbitmq:4.2
+    hostname: rabbitmq
+    restart: unless-stopped
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
+      RABBITMQ_PASSWORD_FILE: /run/secrets/rabbitmq_password
+    secrets:
+      - rabbitmq_password
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - aml-backend
 
-  # Gateway Service
-  gateway:
-    build: ./services/gateway
-    container_name: aml-gateway
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    environment:
-      - INGESTION_SERVICE_URL=http://ingestion:8001
-      - ALERT_MANAGER_URL=http://alert-manager:8005
-    depends_on:
-      - ingestion
-      - alert-manager
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Ingestion Service
   ingestion:
+    <<: *app-service
     build: ./services/ingestion
-    container_name: aml-ingestion
     ports:
-      - "8001:8001"
-    env_file:
-      - .env
+      - "127.0.0.1:8001:8001"
+    environment:
+      <<: *rabbit-environment
+      MAX_BATCH_RECORDS: ${MAX_BATCH_RECORDS:-10000}
+      MAX_UPLOAD_FILE_BYTES: ${MAX_UPLOAD_FILE_BYTES:-5242880}
+    secrets:
+      - rabbitmq_password
     depends_on:
       rabbitmq:
         condition: service_healthy
-    environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
-  # Feature Engineering Service
   feature-engine:
+    <<: *app-service
     build: ./services/feature-engine
-    container_name: aml-feature-engine
     ports:
-      - "8002:8002"
-    env_file:
-      - .env
+      - "127.0.0.1:8002:8002"
+    environment:
+      <<: *rabbit-environment
+      EVENT_PREFETCH: ${EVENT_PREFETCH:-20}
+      VELOCITY_WINDOW_DAYS: ${VELOCITY_WINDOW_DAYS:-30}
+      VELOCITY_SHORT_WINDOW_DAYS: ${VELOCITY_SHORT_WINDOW_DAYS:-7}
+      BASE_CURRENCY: ${BASE_CURRENCY:-USD}
+      STRUCTURING_THRESHOLDS: ${STRUCTURING_THRESHOLDS:-10000}
+      JURISDICTION_DATA_AS_OF: ${JURISDICTION_DATA_AS_OF:-2026-06-19}
+      FATF_CALL_FOR_ACTION_COUNTRIES: ${FATF_CALL_FOR_ACTION_COUNTRIES:-IR,KP,MM}
+      FATF_INCREASED_MONITORING_COUNTRIES: ${FATF_INCREASED_MONITORING_COUNTRIES:-AO,BA,BG,BO,CD,CI,CM,HT,IQ,KE,KW,LA,LB,MC,NP,PG,SS,SY,VE,VG,VN,YE}
+    secrets:
+      - rabbitmq_password
     depends_on:
       rabbitmq:
         condition: service_healthy
-    environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
-  # Risk Scoring Service
   risk-scorer:
+    <<: *app-service
     build: ./services/risk-scorer
-    container_name: aml-risk-scorer
     ports:
-      - "8003:8003"
-    env_file:
-      - .env
+      - "127.0.0.1:8003:8003"
+    environment:
+      <<: *rabbit-environment
+      EVENT_PREFETCH: ${EVENT_PREFETCH:-20}
+      RISK_THRESHOLD_ALERT: ${RISK_THRESHOLD_ALERT:-0.7}
+      RISK_THRESHOLD_HIGH: ${RISK_THRESHOLD_HIGH:-0.8}
+      RISK_THRESHOLD_CRITICAL: ${RISK_THRESHOLD_CRITICAL:-0.9}
+    secrets:
+      - rabbitmq_password
     depends_on:
       rabbitmq:
         condition: service_healthy
-    environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
-  # Graph Analysis Service
   graph-analysis:
+    <<: *app-service
     build: ./services/graph-analysis
-    container_name: aml-graph-analysis
     ports:
-      - "8004:8004"
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+      - "127.0.0.1:8004:8004"
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CENTRALITY_THRESHOLD: ${CENTRALITY_THRESHOLD:-0.7}
+      COMMUNITY_RISK_THRESHOLD: ${COMMUNITY_RISK_THRESHOLD:-0.6}
+      MAX_GRAPH_CONNECTIONS: ${MAX_GRAPH_CONNECTIONS:-1000}
 
-  # Alert Manager Service
   alert-manager:
+    <<: *app-service
     build: ./services/alert-manager
-    container_name: aml-alert-manager
     ports:
-      - "8005:8005"
-    env_file:
-      - .env
+      - "127.0.0.1:8005:8005"
+    environment:
+      <<: *rabbit-environment
+      EVENT_PREFETCH: ${EVENT_PREFETCH:-20}
+      RISK_THRESHOLD_ALERT: ${RISK_THRESHOLD_ALERT:-0.7}
+      RISK_THRESHOLD_SAR: ${RISK_THRESHOLD_SAR:-0.8}
+      SAR_GENERATION_ENABLED: ${SAR_GENERATION_ENABLED:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini-2026-03-17}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-700}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-20}
+      OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-2}
+      ALERT_DB_PATH: /data/alerts.db
+    secrets:
+      - rabbitmq_password
     volumes:
-      - ./.env:/app/.env:ro  # Mount .env file into container
+      - alert_data:/data
     depends_on:
       rabbitmq:
         condition: service_healthy
+
+  gateway:
+    <<: *app-service
+    build: ./services/gateway
+    ports:
+      - "127.0.0.1:8000:8000"
     environment:
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      INGESTION_SERVICE_URL: http://ingestion:8001
+      FEATURE_ENGINE_URL: http://feature-engine:8002
+      RISK_SCORER_URL: http://risk-scorer:8003
+      ALERT_MANAGER_URL: http://alert-manager:8005
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+      JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-aml-reference}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-aml-api}
+      MAX_UPLOAD_FILE_BYTES: ${MAX_UPLOAD_FILE_BYTES:-5242880}
+    secrets:
+      - jwt_secret
+    depends_on:
+      ingestion:
+        condition: service_healthy
+      feature-engine:
+        condition: service_healthy
+      risk-scorer:
+        condition: service_healthy
+      alert-manager:
+        condition: service_healthy
+
+secrets:
+  rabbitmq_password:
+    file: ${RABBITMQ_SECRET_FILE:-./secrets/rabbitmq_password}
+  jwt_secret:
+    file: ${JWT_SECRET_FILE:-./secrets/jwt_secret}
 
 volumes:
+  alert_data:
   rabbitmq_data:
 
 networks:
-  default:
-    name: aml-network 
+  aml-backend:
+    name: aml-backend

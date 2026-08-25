@@ -1,124 +1,59 @@
-.PHONY: help setup build run stop clean test logs health demo
+.PHONY: help setup validate build run stop clean clean-data install test lint format health demo
 
-# Default target
+PYTHON ?= python
+
 help:
-	@echo "AML Microservices System"
-	@echo "========================"
-	@echo ""
-	@echo "Available commands:"
-	@echo "  make setup    - Setup environment configuration"
-	@echo "  make run      - Start all services"
-	@echo "  make stop     - Stop all services"
-	@echo "  make build    - Build all Docker images"
-	@echo "  make clean    - Clean up containers and volumes"
-	@echo "  make test     - Run end-to-end tests"
-	@echo "  make logs     - Show logs from all services"
-	@echo "  make health   - Check health of all services"
-	@echo "  make demo     - Run the demo workflow"
-	@echo ""
+	@echo "AML reference pipeline"
+	@echo "  make setup       Create local configuration and random secret files"
+	@echo "  make validate    Validate the Compose configuration"
+	@echo "  make run         Build and start the stack, waiting for readiness"
+	@echo "  make stop        Stop the stack without deleting data"
+	@echo "  make clean       Remove containers and orphaned resources"
+	@echo "  make clean-data  Remove containers and named data volumes"
+	@echo "  make install     Install pinned development dependencies"
+	@echo "  make test        Run the automated tests"
+	@echo "  make lint        Run Ruff lint and formatting checks"
+	@echo "  make demo        Run the authenticated fixture workflow"
 
-# Setup environment configuration
 setup:
-	@echo "Setting up environment configuration..."
-	@if [ ! -f .env ]; then \
-		cp example.env.txt .env; \
-		echo "Created .env file from example.env.txt"; \
-		echo ""; \
-		echo "IMPORTANT: Please edit .env file with your configuration:"; \
-		echo "  - Set OPENAI_API_KEY for AI-powered SAR generation"; \
-		echo "  - Set JWT_SECRET_KEY for authentication"; \
-		echo "  - Adjust risk thresholds as needed"; \
-		echo ""; \
-	else \
-		echo ".env file already exists"; \
-	fi
+	@test -f .env || cp example.env.txt .env
+	$(PYTHON) scripts/create_local_secrets.py
+	@echo "Local configuration and secret files are ready."
 
-# Build all Docker images
+validate:
+	docker compose config --quiet
+
 build:
-	@echo "Building Docker images..."
 	docker compose build
 
-# Start all services
 run:
-	@echo "Starting AML microservices..."
-	docker compose up -d
-	@echo "Services starting... Use 'make health' to check status"
+	docker compose up --build --detach --wait
 
-# Stop all services
 stop:
-	@echo "Stopping AML microservices..."
 	docker compose down
 
-# Clean up everything
 clean:
-	@echo "Cleaning up containers, networks, and volumes..."
-	docker compose down -v --remove-orphans
-	docker system prune -f
+	docker compose down --remove-orphans
 
-# Run end-to-end tests
+clean-data:
+	docker compose down --volumes --remove-orphans
+
+install:
+	$(PYTHON) -m pip install --requirement requirements-dev.txt
+
 test:
-	@echo "Running end-to-end tests..."
-	python tests/e2e/test_workflow.py
-
-# Show logs from all services
-logs:
-	docker compose logs -f
-
-# Check health of all services
-health:
-	@echo "Checking service health..."
-	@echo "Gateway:        $$(curl -s http://localhost:8000/health | jq -r '.status' 2>/dev/null || echo 'DOWN')"
-	@echo "Ingestion:      $$(curl -s http://localhost:8001/health | jq -r '.status' 2>/dev/null || echo 'DOWN')"
-	@echo "Feature Engine: $$(curl -s http://localhost:8002/health | jq -r '.status' 2>/dev/null || echo 'DOWN')"
-	@echo "Risk Scorer:    $$(curl -s http://localhost:8003/health | jq -r '.status' 2>/dev/null || echo 'DOWN')"
-	@echo "Graph Analysis: $$(curl -s http://localhost:8004/health | jq -r '.status' 2>/dev/null || echo 'DOWN')"
-	@echo "Alert Manager:  $$(curl -s http://localhost:8005/health | jq -r '.status' 2>/dev/null || echo 'DOWN')"
-
-# Run the demo workflow
-demo:
-	@echo "Running AML demo workflow..."
-	@echo "1. Uploading sample data..."
-	curl -X POST http://localhost:8001/batch \
-		-F "accounts=@fixtures/accounts.json" \
-		-F "customers=@fixtures/customers.json" \
-		-F "transactions=@fixtures/transactions.json"
-	@echo ""
-	@echo "2. Waiting for processing..."
-	sleep 15
-	@echo "3. Checking alerts..."
-	curl -s http://localhost:8005/alerts | jq '.alerts | length' || echo "Error retrieving alerts"
-	@echo ""
-	@echo "4. Getting transaction details..."
-	curl -s http://localhost:8002/features/T123 | jq '.features | keys | length' || echo "Error retrieving features"
-	@echo ""
-	@echo "Demo complete! Check the logs with 'make logs' for more details."
-
-# Development helpers
-dev-install:
-	@echo "Installing development dependencies..."
-	pip install -r requirements-dev.txt
+	$(PYTHON) -m pytest
 
 lint:
-	@echo "Running code linting..."
-	flake8 services/
-	black --check services/
-	isort --check-only services/
+	ruff check services tests scripts complete_pipeline_demo.py test_openai_env.py
+	ruff format --check services tests scripts complete_pipeline_demo.py test_openai_env.py
 
 format:
-	@echo "Formatting code..."
-	black services/
-	isort services/
+	ruff check services tests scripts complete_pipeline_demo.py test_openai_env.py --fix
+	ruff format services tests scripts complete_pipeline_demo.py test_openai_env.py
 
-# Quick restart
-restart: stop run
+health:
+	curl --fail --silent http://127.0.0.1:8000/health/ready
 
-# Show service URLs
-urls:
-	@echo "Service URLs:"
-	@echo "Gateway:        http://localhost:8000"
-	@echo "Ingestion:      http://localhost:8001"
-	@echo "Feature Engine: http://localhost:8002"
-	@echo "Risk Scorer:    http://localhost:8003"
-	@echo "Graph Analysis: http://localhost:8004"
-	@echo "Alert Manager:  http://localhost:8005"
-	@echo "RabbitMQ UI:    http://localhost:15672 (guest/guest)" 
+demo:
+	$(PYTHON) complete_pipeline_demo.py

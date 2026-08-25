@@ -1,0 +1,10 @@
+-r services/ingestion/requirements.txt
+-r services/feature-engine/requirements.txt
+-r services/risk-scorer/requirements.txt
+-r services/alert-manager/requirements.txt
+-r services/gateway/requirements.txt
+-r services/graph-analysis/requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.4
