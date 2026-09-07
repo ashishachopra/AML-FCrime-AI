@@ -1,0 +1,33 @@
+{
+  "benchmark": "synthetic_feature_preview",
+  "fixture_as_of": "2026-09-07T12:00:00+00:00",
+  "python": "3.11.8",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "sqlite": "3.43.1",
+  "transactions": 100000,
+  "accounts": 1000,
+  "target_history_rows": 100,
+  "samples": 100,
+  "warmup_samples": 5,
+  "feature_parity": true,
+  "results": {
+    "global_scan_reference": {
+      "p50_ms": 8.8473,
+      "p95_ms": 11.6534,
+      "p99_ms": 11.839
+    },
+    "indexed_sqlite_preview": {
+      "p50_ms": 1.1847,
+      "p95_ms": 1.6796,
+      "p99_ms": 1.8703
+    }
+  },
+  "excludes": [
+    "fixture_loading",
+    "HTTP",
+    "RabbitMQ",
+    "durable_ingestion",
+    "LLM"
+  ],
+  "limitations": "Synthetic warm local reads; not a production SLO or detection-quality estimate."
+}

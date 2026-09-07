@@ -1,38 +1,11 @@
 openapi: 3.1.0
-info:
-  title: AML Ingestion API
-  version: 2.0.0
-  description: Strict related-record validation and durable event publication.
-servers:
-  - url: http://127.0.0.1:8001
+info: {"description": "Validates related AML batch records and publishes durable events", "title": "AML Ingestion API", "version": "2.0.0"}
 paths:
-  /batch:
-    post:
-      summary: Validate and publish customer, account, and transaction JSON arrays.
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [accounts, customers, transactions]
-              properties:
-                accounts: {type: string, format: binary}
-                customers: {type: string, format: binary}
-                transactions: {type: string, format: binary}
-      responses:
-        "201": {description: Batch validated and broker-confirmed}
-        "413": {description: File exceeds the configured size limit}
-        "415": {description: Files must use application/json}
-        "422": {description: Invalid data or broken relationships}
-        "503": {description: Broker unavailable or publish unconfirmed}
-  /health/live:
-    get:
-      responses:
-        "200": {description: Process is live}
-  /health/ready:
-    get:
-      responses:
-        "200": {description: Broker is ready}
-        "503": {description: Dependency unavailable}
-
+  "/batch":
+    $ref: "./ingestion-api.json#/paths/~1batch"
+  "/health":
+    $ref: "./ingestion-api.json#/paths/~1health"
+  "/health/live":
+    $ref: "./ingestion-api.json#/paths/~1health~1live"
+  "/health/ready":
+    $ref: "./ingestion-api.json#/paths/~1health~1ready"

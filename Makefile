@@ -48,6 +48,12 @@ lint:
 	ruff check services tests scripts complete_pipeline_demo.py test_openai_env.py
 	ruff format --check services tests scripts complete_pipeline_demo.py test_openai_env.py
 
+contracts:
+	$(PYTHON) scripts/export_openapi.py
+
+benchmark:
+	$(PYTHON) scripts/benchmark_hybrid.py
+
 format:
 	ruff check services tests scripts complete_pipeline_demo.py test_openai_env.py --fix
 	ruff format services tests scripts complete_pipeline_demo.py test_openai_env.py

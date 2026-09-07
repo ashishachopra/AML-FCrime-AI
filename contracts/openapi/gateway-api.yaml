@@ -1,74 +1,25 @@
 openapi: 3.1.0
-info:
-  title: AML Gateway API
-  version: 2.0.0
-  description: Signed-JWT and role-protected external API.
-servers:
-  - url: http://127.0.0.1:8000
+info: {"description": "Authenticated external gateway for the AML reference pipeline", "title": "AML Gateway API", "version": "3.1.0"}
 paths:
-  /v1/batch:
-    post:
-      security: [{bearerAuth: []}]
-      summary: Upload a batch; requires ingestor or admin role.
-      responses:
-        "201": {description: Batch accepted}
-        "401": {description: Invalid or missing token}
-        "403": {description: Insufficient role}
-  /v1/alerts:
-    get:
-      security: [{bearerAuth: []}]
-      summary: List alerts; requires analyst, compliance_officer, or admin role.
-      responses:
-        "200": {description: Paginated alerts}
-        "401": {description: Invalid or missing token}
-        "403": {description: Insufficient role}
-  /v1/alerts/{alert_id}:
-    get:
-      security: [{bearerAuth: []}]
-      summary: Retrieve alert evidence and its draft narrative.
-      parameters:
-        - {name: alert_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Alert detail}
-        "404": {description: Alert not found}
-    patch:
-      security: [{bearerAuth: []}]
-      summary: Record a compliance review or investigation update; actor comes from the JWT.
-      parameters:
-        - {name: alert_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Updated alert}
-        "403": {description: Compliance officer or admin role required}
-        "409": {description: Invalid state transition}
-  /v1/alerts/{alert_id}/audit:
-    get:
-      security: [{bearerAuth: []}]
-      summary: Retrieve the append-only alert audit trail.
-      parameters:
-        - {name: alert_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Ordered audit events}
-        "403": {description: Compliance officer or admin role required}
-  /v1/transactions/{txn_id}:
-    get:
-      security: [{bearerAuth: []}]
-      parameters:
-        - {name: txn_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Aggregated transaction, feature, score, and alert evidence}
-        "404": {description: Transaction not found}
-  /health/live:
-    get:
-      responses:
-        "200": {description: Process is live}
-  /health/ready:
-    get:
-      responses:
-        "200": {description: All upstream services are ready}
-        "503": {description: One or more upstream services are unavailable}
-components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+  "/":
+    $ref: "./gateway-api.json#/paths/~1"
+  "/health":
+    $ref: "./gateway-api.json#/paths/~1health"
+  "/health/live":
+    $ref: "./gateway-api.json#/paths/~1health~1live"
+  "/health/ready":
+    $ref: "./gateway-api.json#/paths/~1health~1ready"
+  "/v1/alerts":
+    $ref: "./gateway-api.json#/paths/~1v1~1alerts"
+  "/v1/alerts/statistics":
+    $ref: "./gateway-api.json#/paths/~1v1~1alerts~1statistics"
+  "/v1/alerts/{alert_id}":
+    $ref: "./gateway-api.json#/paths/~1v1~1alerts~1{alert_id}"
+  "/v1/alerts/{alert_id}/audit":
+    $ref: "./gateway-api.json#/paths/~1v1~1alerts~1{alert_id}~1audit"
+  "/v1/batch":
+    $ref: "./gateway-api.json#/paths/~1v1~1batch"
+  "/v1/evaluate":
+    $ref: "./gateway-api.json#/paths/~1v1~1evaluate"
+  "/v1/transactions/{txn_id}":
+    $ref: "./gateway-api.json#/paths/~1v1~1transactions~1{txn_id}"

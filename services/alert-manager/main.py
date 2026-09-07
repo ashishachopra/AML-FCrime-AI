@@ -63,11 +63,16 @@ async def lifespan(_: FastAPI):
                 await consumer_task
         if connection and not connection.is_closed:
             await connection.close()
+        if alert_manager:
+            if alert_manager.openai_client:
+                await alert_manager.openai_client.close()
+            alert_manager.repository._connection.close()
+            alert_manager = None
 
 
 app = FastAPI(
     title="AML Alert Manager API",
-    version="2.0.0",
+    version="3.1.0",
     description="Persistent alerts, append-only audit events, and human-reviewed narrative drafts",
     lifespan=lifespan,
 )
@@ -77,6 +82,7 @@ SarReviewStatus = Literal["not_generated", "draft_pending_review", "approved", "
 
 
 class Alert(BaseModel):
+    revision: int = 1
     alert_id: str
     txn_id: str
     customer_id: str | None = None
@@ -92,6 +98,7 @@ class Alert(BaseModel):
     sar_review_status: SarReviewStatus
     sar_generated_by: Literal["openai", "template"] | None = None
     sar_model: str | None = None
+    sar_generation_reason: str | None = None
     sar_reviewed_by: str | None = None
     sar_reviewed_at: datetime | None = None
     investigation_notes: str | None = None
@@ -100,6 +107,7 @@ class Alert(BaseModel):
 
 class AlertUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1, strict=True)
 
     status: AlertStatus | None = None
     investigation_notes: str | None = Field(default=None, max_length=10_000)
@@ -144,9 +152,10 @@ async def get_alerts(
     risk_threshold: float | None = Query(None, ge=0, le=1),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    txn_id: str | None = Query(None, min_length=1, max_length=128),
 ) -> AlertsResponse:
-    alerts = await _manager().get_alerts(status, risk_threshold, limit, offset)
-    total = await _manager().count_alerts(status, risk_threshold)
+    alerts = await _manager().get_alerts(status, risk_threshold, limit, offset, txn_id)
+    total = await _manager().count_alerts(status, risk_threshold, txn_id)
     return AlertsResponse(
         alerts=[Alert(**item) for item in alerts],
         total=total,

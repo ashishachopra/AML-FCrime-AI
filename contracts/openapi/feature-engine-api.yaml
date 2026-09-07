@@ -1,33 +1,19 @@
 openapi: 3.1.0
-info:
-  title: AML Feature Engineering API
-  version: 2.0.0
-  description: Deterministic, currency-aware, policy-versioned feature computation.
-servers:
-  - url: http://127.0.0.1:8002
+info: {"description": "Indexed hybrid AML features with immutable snapshots and a durable outbox", "title": "AML Feature Engineering API", "version": "3.0.0"}
 paths:
-  /compute:
-    post:
-      summary: Compute features for a transaction.
-      responses:
-        "200": {description: Features computed}
-        "422": {description: Invalid or incomplete evidence}
-  /features/{txn_id}:
-    get:
-      parameters:
-        - {name: txn_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Feature set}
-        "404": {description: Transaction not found}
-  /transactions/{txn_id}:
-    get:
-      parameters:
-        - {name: txn_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Transaction evidence with computed features}
-        "404": {description: Transaction not found}
-  /metadata:
-    get:
-      responses:
-        "200": {description: Policy sources, versions, and limitations}
-
+  "/compute":
+    $ref: "./feature-engine-api.json#/paths/~1compute"
+  "/features":
+    $ref: "./feature-engine-api.json#/paths/~1features"
+  "/features/{txn_id}":
+    $ref: "./feature-engine-api.json#/paths/~1features~1{txn_id}"
+  "/health":
+    $ref: "./feature-engine-api.json#/paths/~1health"
+  "/health/live":
+    $ref: "./feature-engine-api.json#/paths/~1health~1live"
+  "/health/ready":
+    $ref: "./feature-engine-api.json#/paths/~1health~1ready"
+  "/metadata":
+    $ref: "./feature-engine-api.json#/paths/~1metadata"
+  "/transactions/{txn_id}":
+    $ref: "./feature-engine-api.json#/paths/~1transactions~1{txn_id}"

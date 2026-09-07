@@ -39,7 +39,12 @@ async def test_template_draft_uses_only_evidence_and_requires_review(
     assert "50000" not in alert["sar_narrative"]
 
     reviewed = await manager.update_alert(
-        alert["alert_id"], {"sar_review_status": "approved", "actor": "analyst@example"}
+        alert["alert_id"],
+        {
+            "sar_review_status": "approved",
+            "actor": "analyst@example",
+            "expected_revision": alert["revision"],
+        },
     )
     assert reviewed["sar_reviewed_by"] == "analyst@example"
     audit = await manager.get_alert_audit(alert["alert_id"])

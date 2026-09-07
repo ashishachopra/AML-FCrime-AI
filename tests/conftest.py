@@ -13,5 +13,9 @@ def load_source_module(name: str, relative_path: str) -> ModuleType:
         raise RuntimeError(f"could not load {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(path.parent))
     return module

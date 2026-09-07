@@ -1,46 +1,21 @@
 openapi: 3.1.0
-info:
-  title: AML Reference Risk Scorer API
-  version: 2.0.0
-  description: Deterministic reference policy; not a trained or validated ML model.
-servers:
-  - url: http://127.0.0.1:8003
+info: {"description": "Deterministic reference risk policy with explicit validation limitations", "title": "AML Risk Scoring API", "version": "3.0.0"}
 paths:
-  /score:
-    post:
-      summary: Apply the reference policy.
-      responses:
-        "200":
-          description: Deterministic risk result
-          content:
-            application/json:
-              schema: {$ref: "#/components/schemas/Score"}
-        "422": {description: Unknown, invalid, or non-finite features}
-  /scores/{txn_id}:
-    get:
-      parameters:
-        - {name: txn_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Stored in-process score}
-        "404": {description: Score not found}
-  /scorer/metadata:
-    get:
-      responses:
-        "200": {description: Validation status, thresholds, and limitations}
-components:
-  schemas:
-    Score:
-      type: object
-      required: [txn_id, risk_score, risk_category, data_quality_score, decision_basis, scorer_version, feature_contributions, triggered_rules, scored_at]
-      properties:
-        txn_id: {type: string}
-        risk_score: {type: number, minimum: 0, maximum: 1}
-        risk_category: {type: string, enum: [low, medium, high, critical]}
-        data_quality_score: {type: number, minimum: 0, maximum: 1}
-        decision_basis: {type: string}
-        scorer_version: {type: string}
-        feature_contributions: {type: object, additionalProperties: {type: number}}
-        triggered_rules: {type: array, items: {type: string}}
-        transaction: {type: object, additionalProperties: true}
-        scored_at: {type: string, format: date-time}
-
+  "/evaluate":
+    $ref: "./risk-scorer-api.json#/paths/~1evaluate"
+  "/health":
+    $ref: "./risk-scorer-api.json#/paths/~1health"
+  "/health/live":
+    $ref: "./risk-scorer-api.json#/paths/~1health~1live"
+  "/health/ready":
+    $ref: "./risk-scorer-api.json#/paths/~1health~1ready"
+  "/model/metrics":
+    $ref: "./risk-scorer-api.json#/paths/~1model~1metrics"
+  "/score":
+    $ref: "./risk-scorer-api.json#/paths/~1score"
+  "/scorer/metadata":
+    $ref: "./risk-scorer-api.json#/paths/~1scorer~1metadata"
+  "/scores":
+    $ref: "./risk-scorer-api.json#/paths/~1scores"
+  "/scores/{txn_id}":
+    $ref: "./risk-scorer-api.json#/paths/~1scores~1{txn_id}"

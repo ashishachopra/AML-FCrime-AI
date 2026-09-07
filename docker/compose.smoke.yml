@@ -1,0 +1,62 @@
+# Isolated synthetic integration stack: no published ports or production secrets.
+name: aml-hybrid-smoke
+x-broker: &broker
+  RABBITMQ_URL: amqp://smoke:smoke-test-only@broker:5672/
+services:
+  broker:
+    image: rabbitmq:4.2-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: smoke
+      RABBITMQ_DEFAULT_PASS: smoke-test-only
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  alerts:
+    build: ../services/alert-manager
+    environment:
+      <<: *broker
+      SAR_GENERATION_ENABLED: 'false'
+      OPENAI_API_KEY: ''
+      ALERT_DB_PATH: /data/alerts.db
+    depends_on:
+      broker: {condition: service_healthy}
+  risk:
+    build: ../services/risk-scorer
+    environment: *broker
+    depends_on:
+      alerts: {condition: service_healthy}
+  features:
+    build: ../services/feature-engine
+    environment:
+      <<: *broker
+      FEATURE_DB_PATH: /data/features.db
+    depends_on:
+      risk: {condition: service_healthy}
+  ingestion:
+    build: ../services/ingestion
+    environment: *broker
+    depends_on:
+      features: {condition: service_healthy}
+  gateway:
+    build: ../services/gateway
+    environment:
+      AUTH_DISABLED: 'true'
+      INGESTION_SERVICE_URL: http://ingestion:8001
+      FEATURE_ENGINE_URL: http://features:8002
+      RISK_SCORER_URL: http://risk:8003
+      ALERT_MANAGER_URL: http://alerts:8005
+      EVALUATION_TIMEOUT_SECONDS: '5'
+    depends_on:
+      ingestion: {condition: service_healthy}
+  smoke:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    command: [python, scripts/smoke_hybrid.py]
+    depends_on:
+      gateway: {condition: service_healthy}
+networks:
+  default:
+    internal: true

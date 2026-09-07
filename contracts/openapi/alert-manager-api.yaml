@@ -1,38 +1,17 @@
 openapi: 3.1.0
-info:
-  title: AML Alert Manager API
-  version: 2.0.0
-  description: Persistent deduplicated alerts, audit events, and human-reviewed narrative drafts.
-servers:
-  - url: http://127.0.0.1:8005
+info: {"description": "Persistent alerts, append-only audit events, and human-reviewed narrative drafts", "title": "AML Alert Manager API", "version": "3.1.0"}
 paths:
-  /alerts:
-    get:
-      summary: List filtered alerts.
-      responses:
-        "200": {description: Paginated alerts}
-  /alerts/statistics:
-    get:
-      responses:
-        "200": {description: Alert and review-backlog statistics}
-  /alerts/{alert_id}:
-    get:
-      parameters:
-        - {name: alert_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Alert}
-        "404": {description: Alert not found}
-    patch:
-      summary: Record investigation changes or a human narrative review.
-      parameters:
-        - {name: alert_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Updated and audited alert}
-        "409": {description: Invalid review transition}
-  /alerts/{alert_id}/audit:
-    get:
-      parameters:
-        - {name: alert_id, in: path, required: true, schema: {type: string}}
-      responses:
-        "200": {description: Ordered append-only audit events}
-
+  "/alerts":
+    $ref: "./alert-manager-api.json#/paths/~1alerts"
+  "/alerts/statistics":
+    $ref: "./alert-manager-api.json#/paths/~1alerts~1statistics"
+  "/alerts/{alert_id}":
+    $ref: "./alert-manager-api.json#/paths/~1alerts~1{alert_id}"
+  "/alerts/{alert_id}/audit":
+    $ref: "./alert-manager-api.json#/paths/~1alerts~1{alert_id}~1audit"
+  "/health":
+    $ref: "./alert-manager-api.json#/paths/~1health"
+  "/health/live":
+    $ref: "./alert-manager-api.json#/paths/~1health~1live"
+  "/health/ready":
+    $ref: "./alert-manager-api.json#/paths/~1health~1ready"

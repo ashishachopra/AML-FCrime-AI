@@ -68,7 +68,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="AML Risk Scoring API",
-    version="2.0.0",
+    version="3.0.0",
     description="Deterministic reference risk policy with explicit validation limitations",
     lifespan=lifespan,
 )
@@ -80,6 +80,7 @@ class ScoreRequest(BaseModel):
     txn_id: str = Field(min_length=1, max_length=128)
     features: dict[str, float] = Field(min_length=1, max_length=100)
     transaction: dict[str, Any] | None = None
+    feature_version: str | None = Field(default=None, max_length=100)
 
 
 class ScoreResponse(BaseModel):
@@ -89,6 +90,8 @@ class ScoreResponse(BaseModel):
     data_quality_score: float = Field(ge=0, le=1)
     decision_basis: str
     scorer_version: str
+    feature_version: str | None = None
+    review_recommended: bool
     feature_contributions: dict[str, float]
     triggered_rules: list[str]
     transaction: dict[str, Any]
@@ -125,6 +128,7 @@ async def process_features_ready_event(event_data: dict[str, Any]) -> None:
     result = await _scorer().score_transaction(
         data["txn_id"], data["features"], data.get("transaction")
     )
+    result["feature_version"] = data.get("feature_version")
     scored_transactions[data["txn_id"]] = result
     await publish_event(exchange, "Scored", result, event_data.get("batchid"))
 
@@ -138,6 +142,20 @@ async def score_transaction(request: ScoreRequest) -> ScoreResponse:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     scored_transactions[request.txn_id] = result
+    result["feature_version"] = request.feature_version
+    return ScoreResponse(**result)
+
+
+@app.post("/evaluate", response_model=ScoreResponse)
+async def evaluate_transaction(request: ScoreRequest) -> ScoreResponse:
+    """Read-only preview: does not overwrite stored scores or emit events."""
+    try:
+        result = await _scorer().score_transaction(
+            request.txn_id, request.features, request.transaction
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["feature_version"] = request.feature_version
     return ScoreResponse(**result)
 
 

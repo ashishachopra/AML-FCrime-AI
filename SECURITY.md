@@ -26,4 +26,12 @@ Do not include customer data, credentials, tokens, or live suspicious-activity d
 
 ## OpenAI data boundary
 
-The implementation uses the Responses API with `store=false`, no tools, bounded output, and evidence-only instructions. Customer/account/transaction identifiers are removed from model input. Those technical controls do not replace organizational approval of data processing, residency, retention, access, contracts, privacy, model risk, and regulatory obligations.
+Optional drafting is disabled by default. The implementation uses the Responses API with `store=false`, no tools, bounded typed input/output, no SDK retries, persistent attempt allowances and a circuit breaker. Alerts/templates are committed before model calls. Customer/account/transaction identifiers and free-form source strings are omitted from model input. Those technical controls do not replace organizational approval of data processing, residency, retention, access, contracts, privacy, model risk, and regulatory obligations.
+
+Read [AI_SECURITY_AND_COST.md](docs/AI_SECURITY_AND_COST.md) for tested abuse cases, configuration and recovery limits. Paid attempt counts are not dollar guarantees; a local timeout cannot prove provider work stopped. Protect the authoritative alert database and provider credentials. Separate databases multiply allowances; per-process gateway quotas require a shared edge replacement when scaling.
+
+## Agent and review boundary
+
+The gateway requires short-lived typed agent identities and fresh issuer-asserted human MFA for narrative reviews and every case-status change. All edits compare the alert revision atomically; review audit entries identify the narrative hash. Automation may assist with authorized notes and assignment, but cannot use an admin role to finalize or reopen cases. The local token helper's simulated MFA and `AUTH_DISABLED=true` are development bypasses.
+
+Internal APIs trust the service network; direct access bypasses gateway identity enforcement. Claims cannot distinguish an agent borrowing a real human token. The reference is single-organization and has no tenant-level authorization. Treat all narratives and investigator notes as untrusted text in downstream UIs/agents; do not execute them, fetch embedded links, or treat them as instructions.

@@ -61,3 +61,24 @@ async def test_batch_processor_rejects_duplicates_and_orphans() -> None:
             json.dumps(customers).encode(),
             json.dumps(transactions).encode(),
         )
+
+
+def test_ingestion_accepts_network_evidence_and_requires_paired_conversion():
+    value = {
+        "txn_id": "T1",
+        "account_id": "A1",
+        "timestamp": "2026-09-07T12:00:00Z",
+        "amount": "3750",
+        "currency": "SAR",
+        "counterparty_country": "US",
+        "direction": "outbound",
+        "counterparty_account_id": "B1",
+        "base_currency": "USD",
+        "base_currency_amount": "1000",
+    }
+    parsed = models.Transaction.model_validate(value)
+    assert parsed.counterparty_account_id == "B1"
+    assert str(parsed.base_currency_amount) == "1000"
+    del value["base_currency_amount"]
+    with pytest.raises(ValidationError, match="supplied together"):
+        models.Transaction.model_validate(value)

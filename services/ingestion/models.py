@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     JsonValue,
     StringConstraints,
+    model_validator,
 )
 
 Identifier = Annotated[
@@ -122,6 +123,16 @@ class Transaction(StrictRecord):
     )
     currency: CurrencyCode = Field(description="ISO 4217 currency code")
     counterparty_country: CountryCode = Field(description="ISO 3166-1 alpha-2 counterparty country")
+    counterparty_account_id: Identifier | None = Field(
+        default=None, description="Stable pseudonymous account ID in the shared network namespace"
+    )
+    direction: Literal["inbound", "outbound"] | None = Field(
+        default=None, description="Only canonical outbound records create network edges"
+    )
+    base_currency: CurrencyCode | None = None
+    base_currency_amount: Decimal | None = Field(
+        default=None, gt=0, max_digits=20, decimal_places=4
+    )
     counterparty_name: SourceText | None = None
     purpose: SourceText | None = None
     transaction_type: Literal["wire_transfer", "cash_deposit"] | None = None
@@ -130,3 +141,11 @@ class Transaction(StrictRecord):
         max_length=50,
         description="Unverified source-system annotations retained as evidence",
     )
+
+    @model_validator(mode="after")
+    def require_conversion_pair(self):
+        if (self.base_currency is None) != (self.base_currency_amount is None):
+            raise ValueError("base_currency and base_currency_amount must be supplied together")
+        if self.base_currency == self.currency and self.base_currency_amount != self.amount:
+            raise ValueError("same-currency converted amount must equal amount")
+        return self

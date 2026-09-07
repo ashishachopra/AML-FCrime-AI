@@ -1,11 +1,12 @@
 import asyncio
 import logging
+import math
 import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +15,7 @@ from fastapi import Path as ApiPath
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict, Field
+from resource_limits import PrincipalLimiter, ResourceGuard
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -33,11 +35,17 @@ RISK_SCORER_URL = _service_url("RISK_SCORER_URL", "http://risk-scorer:8003")
 ALERT_MANAGER_URL = _service_url("ALERT_MANAGER_URL", "http://alert-manager:8005")
 
 http_client: httpx.AsyncClient | None = None
+principal_limiter = PrincipalLimiter(
+    per_minute=int(os.getenv("GATEWAY_REQUESTS_PER_MINUTE", "120")),
+    burst=int(os.getenv("GATEWAY_REQUEST_BURST", "30")),
+    max_principals=int(os.getenv("GATEWAY_MAX_PRINCIPALS", "4096")),
+)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global http_client
+    evaluation_deadline()
     timeout = httpx.Timeout(
         connect=float(os.getenv("UPSTREAM_CONNECT_TIMEOUT_SECONDS", "3")),
         read=float(os.getenv("UPSTREAM_READ_TIMEOUT_SECONDS", "30")),
@@ -58,7 +66,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="AML Gateway API",
-    version="2.0.0",
+    version="3.1.0",
     description="Authenticated external gateway for the AML reference pipeline",
     lifespan=lifespan,
 )
@@ -71,7 +79,39 @@ class BatchResponse(BaseModel):
     records_processed: int
 
 
+class EvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transaction: dict[
+        Annotated[str, Field(max_length=32)], Annotated[str, Field(max_length=128)]
+    ] = Field(min_length=6, max_length=10)
+
+
+class EvaluationResponse(BaseModel):
+    mode: Literal["preview"] = "preview"
+    txn_id: str
+    features: dict[str, float]
+    feature_version: str
+    feature_computed_at: datetime
+    risk_score: float
+    risk_category: str
+    data_quality_score: float
+    review_recommended: bool
+    triggered_rules: list[str]
+    feature_contributions: dict[str, float]
+    scorer_version: str
+    decision_basis: str
+
+
+def evaluation_deadline() -> float:
+    value = float(os.getenv("EVALUATION_TIMEOUT_SECONDS", "1.0"))
+    if not math.isfinite(value) or not 0 < value <= 30:
+        raise ValueError("EVALUATION_TIMEOUT_SECONDS must be in (0, 30]")
+    return value
+
+
 class Alert(BaseModel):
+    revision: int = 1
     alert_id: str
     txn_id: str
     customer_id: str | None = None
@@ -90,6 +130,7 @@ class AlertDetail(Alert):
     sar_narrative: str | None = None
     sar_generated_by: Literal["openai", "template"] | None = None
     sar_model: str | None = None
+    sar_generation_reason: str | None = None
     sar_reviewed_by: str | None = None
     sar_reviewed_at: datetime | None = None
     investigation_notes: str | None = None
@@ -98,6 +139,7 @@ class AlertDetail(Alert):
 
 class AlertUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1, strict=True)
 
     status: Literal["open", "investigating", "closed", "false_positive"] | None = None
     investigation_notes: str | None = Field(default=None, max_length=10_000)
@@ -134,8 +176,11 @@ class HealthResponse(BaseModel):
 
 
 class Principal(BaseModel):
-    subject: str
+    subject: str = Field(min_length=1, max_length=200)
     roles: set[str]
+    principal_type: Literal["human", "service", "agent"] = "service"
+    amr: set[str] = Field(default_factory=set)
+    auth_time: float | None = None
 
 
 def _read_secret(name: str) -> str | None:
@@ -150,13 +195,21 @@ async def verify_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> Principal:
     if os.getenv("AUTH_DISABLED", "false").lower() == "true":
-        return Principal(subject="local-development", roles={"admin", "analyst", "ingestor"})
+        return Principal(
+            subject="local-development",
+            roles={"admin", "analyst", "ingestor"},
+            principal_type="human",
+            amr={"mfa"},
+            auth_time=datetime.now(timezone.utc).timestamp(),
+        )
     if not credentials:
         raise HTTPException(
             status_code=401,
             detail="authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if len(credentials.credentials) > 8192:
+        raise HTTPException(status_code=401, detail="access token exceeds size limit")
 
     secret = _read_secret("JWT_SECRET_KEY")
     if not secret or len(secret) < 32 or secret == "your_jwt_secret_key_here":
@@ -167,6 +220,8 @@ async def verify_token(
 
     audience = os.getenv("JWT_AUDIENCE")
     issuer = os.getenv("JWT_ISSUER")
+    if not audience or not issuer:
+        raise HTTPException(status_code=503, detail="JWT issuer and audience must be configured")
     try:
         claims = jwt.decode(
             credentials.credentials,
@@ -174,9 +229,14 @@ async def verify_token(
             algorithms=[algorithm],
             audience=audience,
             issuer=issuer,
-            options={"verify_aud": bool(audience), "require_sub": True, "require_exp": True},
+            options={
+                "require_aud": True,
+                "require_iss": True,
+                "require_sub": True,
+                "require_exp": True,
+            },
         )
-    except JWTError as exc:
+    except (JWTError, TypeError, ValueError, OverflowError) as exc:
         raise HTTPException(
             status_code=401,
             detail="invalid or expired access token",
@@ -184,17 +244,87 @@ async def verify_token(
         ) from exc
 
     raw_roles = claims.get("roles", claims.get("role", []))
-    roles = {raw_roles} if isinstance(raw_roles, str) else set(raw_roles or [])
-    return Principal(subject=str(claims["sub"]), roles=roles)
+    roles = [raw_roles] if isinstance(raw_roles, str) else raw_roles
+    amr = claims.get("amr", [])
+    kind = claims.get("principal_type", "service")
+    auth_time = claims.get("auth_time")
+    now = datetime.now(timezone.utc).timestamp()
+    if any(
+        type(claims[key]) not in {int, float} or not math.isfinite(claims[key])
+        for key in ("exp", "iat", "nbf")
+        if key in claims
+    ):
+        raise HTTPException(status_code=401, detail="invalid token time claims")
+    valid_lists = all(
+        isinstance(value, list)
+        and len(value) <= 20
+        and all(isinstance(item, str) and 0 < len(item) <= 64 for item in value)
+        for value in (roles, amr)
+    )
+    if not (
+        valid_lists
+        and isinstance(kind, str)
+        and kind in {"human", "service", "agent"}
+        and isinstance(claims["sub"], str)
+        and 0 < len(claims["sub"]) <= 200
+        and (
+            auth_time is None
+            or type(auth_time) in {int, float}
+            and math.isfinite(auth_time)
+            and auth_time <= now + 30
+        )
+    ):
+        raise HTTPException(status_code=401, detail="invalid identity claims")
+    if kind == "agent":
+        issued, expires = claims.get("iat"), claims.get("exp")
+        if not (
+            type(issued) in {int, float}
+            and type(expires) in {int, float}
+            and math.isfinite(issued)
+            and math.isfinite(expires)
+            and issued <= now + 30
+            and 0 < expires - issued <= 900
+        ):
+            raise HTTPException(
+                status_code=401, detail="agent tokens require iat and lifetime at most 15 minutes"
+            )
+    return Principal(
+        subject=claims["sub"],
+        roles=set(roles),
+        principal_type=kind,
+        amr=set(amr),
+        auth_time=auth_time,
+    )
 
 
 def require_roles(*allowed: str) -> Callable[..., Any]:
     async def dependency(principal: Principal = Depends(verify_token)) -> Principal:
         if "admin" not in principal.roles and principal.roles.isdisjoint(allowed):
             raise HTTPException(status_code=403, detail="insufficient role")
+        retry_after = principal_limiter.admit(principal.subject)
+        if retry_after:
+            raise HTTPException(
+                status_code=429,
+                detail="principal request budget exhausted",
+                headers={"Retry-After": str(retry_after)},
+            )
         return principal
 
     return dependency
+
+
+def require_human_review(principal: Principal) -> None:
+    now = datetime.now(timezone.utc).timestamp()
+    if not (
+        principal.principal_type == "human"
+        and "mfa" in principal.amr
+        and principal.auth_time is not None
+        and 0 <= now - principal.auth_time <= 300
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="final review requires a human identity with MFA from the last five minutes",
+        )
 
 
 def _client() -> httpx.AsyncClient:
@@ -211,6 +341,10 @@ async def request_id_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     return response
+
+
+# Outer ASGI boundary counts streamed bytes before FastAPI parses JSON/multipart.
+app.add_middleware(ResourceGuard)
 
 
 async def _read_upload(upload: UploadFile, max_bytes: int) -> bytes:
@@ -264,6 +398,54 @@ async def upload_batch(
     return BatchResponse(**response.json())
 
 
+@app.post("/v1/evaluate", response_model=EvaluationResponse)
+async def evaluate_transaction(
+    request: EvaluationRequest,
+    principal: Principal = Depends(require_roles("ingestor", "analyst", "compliance_officer")),
+) -> EvaluationResponse:
+    """Score a preview against observed history under a single total deadline."""
+    try:
+        async with asyncio.timeout(evaluation_deadline()):
+            feature_response = await _client().post(
+                f"{FEATURE_ENGINE_URL}/compute", json=request.transaction
+            )
+            if feature_response.status_code != 200:
+                status_code = feature_response.status_code
+                raise HTTPException(
+                    status_code=status_code if status_code in {409, 422, 503} else 503,
+                    detail="feature evaluation unavailable or invalid transaction evidence",
+                )
+            evidence = feature_response.json()
+            score_response = await _client().post(
+                f"{RISK_SCORER_URL}/evaluate",
+                json={
+                    "txn_id": evidence["txn_id"],
+                    "features": evidence["features"],
+                    "feature_version": evidence["feature_version"],
+                },
+            )
+            if score_response.status_code != 200:
+                raise HTTPException(status_code=503, detail="risk evaluation unavailable")
+            score = score_response.json()
+            return EvaluationResponse(
+                **{
+                    key: value
+                    for key, value in score.items()
+                    if key in EvaluationResponse.model_fields
+                    and key not in {"feature_version", "feature_computed_at"}
+                },
+                features=evidence["features"],
+                feature_version=evidence["feature_version"],
+                feature_computed_at=evidence["computed_at"],
+            )
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise HTTPException(
+            status_code=504, detail="evaluation deadline exceeded; no decision available"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="evaluation service unavailable") from exc
+
+
 @app.get("/v1/alerts", response_model=AlertsResponse)
 async def get_alerts(
     status: str | None = Query(None, pattern=r"^(open|investigating|closed|false_positive)$"),
@@ -285,6 +467,19 @@ async def get_alerts(
         raise HTTPException(status_code=response.status_code, detail="could not retrieve alerts")
     logger.info("User %s retrieved alerts", principal.subject)
     return AlertsResponse(**response.json())
+
+
+@app.get("/v1/alerts/statistics")
+async def alert_statistics(
+    principal: Principal = Depends(require_roles("compliance_officer")),
+) -> dict[str, Any]:
+    try:
+        response = await _client().get(f"{ALERT_MANAGER_URL}/alerts/statistics")
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="alert service unavailable") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=503, detail="could not retrieve alert statistics")
+    return response.json()
 
 
 @app.get("/v1/alerts/{alert_id}", response_model=AlertDetail)
@@ -327,6 +522,10 @@ async def update_alert(
     alert_id: str = ApiPath(min_length=1, max_length=128),
     principal: Principal = Depends(require_roles("compliance_officer")),
 ) -> AlertDetail:
+    # Protect every status transition so automation cannot undo a human closure
+    # by reopening the case. Notes and assignment remain available to assistants.
+    if update.sar_review_status is not None or update.status is not None:
+        require_human_review(principal)
     payload = update.model_dump(exclude_unset=True)
     payload["actor"] = principal.subject
     try:
@@ -354,7 +553,9 @@ async def get_transaction(
         transaction_response, score_response, alerts_response = await asyncio.gather(
             client.get(f"{FEATURE_ENGINE_URL}/transactions/{txn_id}"),
             client.get(f"{RISK_SCORER_URL}/scores/{txn_id}"),
-            client.get(f"{ALERT_MANAGER_URL}/alerts", params={"limit": 1000, "offset": 0}),
+            client.get(
+                f"{ALERT_MANAGER_URL}/alerts", params={"txn_id": txn_id, "limit": 1, "offset": 0}
+            ),
         )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="transaction dependencies unavailable") from exc
@@ -416,7 +617,7 @@ async def readiness() -> HealthResponse:
 async def root() -> dict[str, Any]:
     return {
         "service": "AML Gateway API",
-        "version": "2.0.0",
+        "version": app.version,
         "authentication": "JWT bearer token required; role-based authorization enabled",
         "docs": "/docs",
     }

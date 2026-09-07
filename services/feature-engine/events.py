@@ -24,6 +24,21 @@ class DateTimeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+async def publish_envelope(exchange: aio_pika.Exchange, event: dict):
+    """Publish an already persisted envelope without changing its identity."""
+    message = aio_pika.Message(
+        json.dumps(event, cls=DateTimeEncoder, allow_nan=False).encode(),
+        content_type="application/json",
+        content_encoding="utf-8",
+        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+        message_id=event["id"],
+        correlation_id=event.get("batchid"),
+        timestamp=datetime.fromisoformat(event["time"].replace("Z", "+00:00")),
+        headers={"event_type": event["type"], "source": event["source"]},
+    )
+    await exchange.publish(message, routing_key="", mandatory=True, timeout=5.0)
+
+
 async def publish_event(
     exchange: aio_pika.Exchange, event_type: str, data: Dict[str, Any], batch_id: str = None
 ):
@@ -105,17 +120,28 @@ async def consume_events(
     # Bind queue to exchange
     await queue.bind(exchange)
 
+    # Preserve entity-before-transaction order within this queue. The handler
+    # commits to the local outbox before ack and performs no broker I/O.
+    handler_lock = asyncio.Lock()
+
     async def process_message(message: aio_pika.IncomingMessage):
         try:
             event_data = json.loads(message.body.decode("utf-8"))
             event_type = event_data.get("type")
             if event_type in ["IngestedTransaction", "IngestedCustomer", "IngestedAccount"]:
-                await event_handler(event_data)
+                async with handler_lock:
+                    await event_handler(event_data)
                 logger.info("Processed %s event", event_type)
             await message.ack()
-        except Exception:
+        except (ValueError, KeyError, TypeError):
             logger.exception("Rejecting invalid or failed event %s", message.message_id)
             await message.reject(requeue=False)
+        except Exception:
+            logger.exception(
+                "Transient feature processing failure; requeueing %s", message.message_id
+            )
+            await asyncio.sleep(0.25)
+            await message.reject(requeue=True)
 
     # Start consuming
     await queue.consume(process_message)
